@@ -73,7 +73,7 @@ class Environment:
         game_diff = game - self.game if self.game is not None else game
         self.game = game
 
-        state = np.concatenate([game, game_diff])
+        state = np.stack([game, game_diff], axis=2)
         return state
 
     def _parse_score(self, score) -> str:

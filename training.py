@@ -1,7 +1,7 @@
 import logging
 import time
 
-from agent import Agent
+from agent import Agent, NeuralAgent
 from environment import Environment
 
 logging.basicConfig(format='%(asctime)s:%(levelname)s:%(name)s:%(message)s', level=logging.INFO)
@@ -21,7 +21,7 @@ def play_episode(env: Environment, agent: Agent):
 
 if __name__ == '__main__':
     env = Environment()
-    agent = Agent()
+    agent = NeuralAgent(445 * 490 * 2, 20, 3)
 
     logging.warning("Episode start in 3 seconds, move focus to IcyTower")
     time.sleep(3)
