@@ -18,23 +18,17 @@ class Environment:
         self.keyboard = Controller()
         self.sct = None
 
-        self.game, self.score, self.action = None, None, None
-        self.reset(reset_using_keyboard=False)
+        self.game, self.score = None, None
 
     def __enter__(self):
         self.sct = self.mss.__enter__()
-        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.sct = None
         self.mss.__exit__(exc_type, exc_val, exc_tb)
 
-        if self.action is not None:
-            self.keyboard.release(self.action)
-
     def reset(self, reset_using_keyboard=True):
         self.score = 0
-        self.action = None
         self.game = None
 
         if reset_using_keyboard:
@@ -47,14 +41,25 @@ class Environment:
             self.keyboard.release(Key.space)
             time.sleep(1)
 
-    def state(self):
-        if self.sct is None:
-            raise ValueError("Environment not started. Did you forget to call __enter__?")
+        im = self._screenshot()
+        return self._state(im)
 
-        im = np.array(self.sct.grab((140, 129, 780, 609)))  # BGR 640 x 480
-        im = im[:, 75:-75]  # Remove edges
-        im = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)  # BGR -> RGB
+    def step(self, action, duration=0.1):
+        self.unpause()
 
+        try:
+            self.keyboard.press(action)
+            time.sleep(duration)
+        finally:
+            self.keyboard.release(action)
+
+        im = self._screenshot()
+
+        self.pause()
+
+        return self._state(im)
+
+    def _state(self, im):
         game_over_slice = im[175:, 21:469]
         game_over = self._is_game_over(game_over_slice)
 
@@ -62,9 +67,18 @@ class Environment:
         state = self._preprocess_game(game)
 
         score = im[443:, 70:]
-        score = self._parse_score(score)
+        score, reward = self._parse_score(score)
 
-        return state, score, game_over
+        return state, reward, score, game_over
+
+    def _screenshot(self):
+        if self.sct is None:
+            raise ValueError("Environment not started. Did you forget to call __enter__?")
+
+        im = np.array(self.sct.grab((140, 129, 780, 609)))  # BGR 640 x 480
+        im = im[:, 75:-75]  # Remove edges
+        im = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)  # BGR -> RGB
+        return im
 
     def _preprocess_game(self, game):
         ret, game = cv2.threshold(game, 50, 1, cv2.THRESH_BINARY)
@@ -76,7 +90,7 @@ class Environment:
         state = np.stack([game, game_diff], axis=2)
         return state
 
-    def _parse_score(self, score) -> str:
+    def _parse_score(self, score):
         score = score[:, :score.shape[1] // 2]
         ret, score = cv2.threshold(score, 127, 255, cv2.THRESH_BINARY_INV)
         score = pytesseract.image_to_string(score, config='--oem 1 --psm 7 '  # 8
@@ -86,11 +100,13 @@ class Environment:
             score = int(score)
             if score < self.score:
                 score = self.score
+            reward = score - self.score
             self.score = score
         except ValueError:
             score = self.score
+            reward = 0
 
-        return score
+        return score, reward
 
     def _is_game_over(self, game_over_slice):
         middle_row_idx = self.GAME_OVER.shape[0] // 2
@@ -115,16 +131,23 @@ class Environment:
         else:
             return False
 
-    def act(self, action):
-        if self.action is not None:
-            self.keyboard.release(self.action)
+    def pause(self):
+        try:
+            self.keyboard.press('p')
+            time.sleep(0.05)
+        finally:
+            self.keyboard.release('p')
 
-        self.action = action
-        self.keyboard.press(action)
+    def unpause(self):
+        try:
+            self.keyboard.press(Key.enter)
+            time.sleep(0.05)
+        finally:
+            self.keyboard.release(Key.enter)
 
 
 if __name__ == '__main__':
     with Environment() as env:
-        game, score, game_over = env.state()
+        game, reward, score, game_over = env._state()
         game = Image.fromarray(game).show()
         print(f"Score: '{score}', Game over: {game_over}")

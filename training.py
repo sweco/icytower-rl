@@ -8,15 +8,24 @@ logging.basicConfig(format='%(asctime)s:%(levelname)s:%(name)s:%(message)s', lev
 
 
 def play_episode(env: Environment, agent: Agent):
+    states, actions, rewards = [], [], []
+
     with env:
-        state, score, game_over = env.state()
+        state, reward, score, game_over = env.reset()
 
         while not game_over:
             action = agent.action(state)
-            env.act(action)
-            logging.info(f"Score: {score}, Action: {action}")
 
-            state, score, game_over = env.state()
+            states.append(state)
+            actions.append(action)
+
+            state, reward, score, game_over = env.step(action)
+
+            rewards.append(reward)
+
+            logging.info(f"Score: {score}, Reward: {reward}, Action: {action}")
+
+    return states, actions, rewards
 
 
 if __name__ == '__main__':
@@ -26,4 +35,7 @@ if __name__ == '__main__':
     logging.warning("Episode start in 3 seconds, move focus to IcyTower")
     time.sleep(3)
 
-    play_episode(env, agent)
+    s, a, r = play_episode(env, agent)
+    print(len(s))
+    print(len(a))
+    print(len(r))
