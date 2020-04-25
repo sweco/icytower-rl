@@ -1,5 +1,7 @@
 import logging
 import time
+from multiprocessing import Lock
+from multiprocessing.pool import Pool
 
 import cv2
 import mss
@@ -9,6 +11,36 @@ from PIL import Image
 from pynput.keyboard import Controller, Key
 
 
+class ScoreParser:
+    def __init__(self):
+        self.pool = None
+        self.task = None
+        self.lock = Lock()
+
+    def __enter__(self):
+        self.pool = Pool(1)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.pool.close()
+        self.pool.join()
+
+    def parse_async(self, image, callback):
+        with self.lock:
+            if self.task is None:
+                def inner_callback(value):
+                    callback(value)
+                    with self.lock:
+                        self.task = None
+
+                self.task = self.pool.apply_async(pytesseract.image_to_string, [image],
+                                                  kwds={'config': '--oem 1 --psm 7 '  # 8
+                                                                  '-c tessedit_char_whitelist=0123456789'},
+                                                  callback=inner_callback)
+                return True
+            else:
+                return False
+
+
 class Environment:
     GAME_OVER = np.asarray(Image.open('game-over.png').convert('L'))
     i = 0
@@ -16,22 +48,36 @@ class Environment:
     def __init__(self):
         self.mss = mss.mss()
         self.keyboard = Controller()
+        self.score_parser = ScoreParser()
+
         self.sct = None
 
-        self.game, self.score = None, None
+        self.game = None
+        self.last_score = None
+        self.score = None
 
     def __enter__(self):
         self.sct = self.mss.__enter__()
+        self.score_parser.__enter__()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.sct = None
         self.mss.__exit__(exc_type, exc_val, exc_tb)
+        self.score_parser.__exit__(exc_type, exc_val, exc_tb)
 
-    def reset(self, reset_using_keyboard=True):
-        self.score = 0
+    def reset(self):
+        self.unpause()
+
+        im = self._screenshot()
+        _, _, game_over = self._state(im)
+
+        self.__exit__(None, None, None)
+
+        self.last_score = self.score = 0
         self.game = None
 
-        if reset_using_keyboard:
+        # Game over, just hit play again
+        if game_over:
             self.keyboard.press(Key.space)
             time.sleep(0.1)
             self.keyboard.release(Key.space)
@@ -39,19 +85,41 @@ class Environment:
             self.keyboard.press(Key.space)
             time.sleep(0.1)
             self.keyboard.release(Key.space)
-            time.sleep(1)
+        # In the middle of the game, quit to menu and start play
+        else:
+            self.keyboard.press(Key.esc)
+            time.sleep(0.1)
+            self.keyboard.release(Key.esc)
+            time.sleep(0.5)
+            self.keyboard.press(Key.esc)
+            time.sleep(0.1)
+            self.keyboard.release(Key.esc)
+            time.sleep(0.5)
+            self.keyboard.press(Key.space)
+            time.sleep(0.1)
+            self.keyboard.release(Key.space)
+
+        time.sleep(1)
+
+        self.__enter__()
 
         im = self._screenshot()
         return self._state(im)
 
-    def step(self, action, duration=0.1):
+    def step(self, a_dir, a_jump, duration=0.1):
         self.unpause()
 
         try:
-            self.keyboard.press(action)
+            if a_dir is not None:
+                self.keyboard.press(a_dir)
+            if a_jump is not None:
+                self.keyboard.press(a_jump)
             time.sleep(duration)
         finally:
-            self.keyboard.release(action)
+            if a_dir is not None:
+                self.keyboard.release(a_dir)
+            if a_jump is not None:
+                self.keyboard.release(a_jump)
 
         im = self._screenshot()
 
@@ -67,9 +135,12 @@ class Environment:
         state = self._preprocess_game(game)
 
         score = im[443:, 70:]
-        score, reward = self._parse_score(score)
+        score = self._parse_score(score)
 
-        return state, reward, score, game_over
+        if game_over:
+            score -= 100
+
+        return state, score, game_over
 
     def _screenshot(self):
         if self.sct is None:
@@ -84,7 +155,7 @@ class Environment:
         ret, game = cv2.threshold(game, 50, 1, cv2.THRESH_BINARY)
         game = game.astype(np.int8)
 
-        game_diff = game - self.game if self.game is not None else game
+        game_diff = game - self.game if self.game is not None else game - game
         self.game = game
 
         state = np.stack([game, game_diff], axis=2)
@@ -93,20 +164,18 @@ class Environment:
     def _parse_score(self, score):
         score = score[:, :score.shape[1] // 2]
         ret, score = cv2.threshold(score, 127, 255, cv2.THRESH_BINARY_INV)
-        score = pytesseract.image_to_string(score, config='--oem 1 --psm 7 '  # 8
-                                                          '-c tessedit_char_whitelist=0123456789')
 
-        try:
-            score = int(score)
-            if score < self.score:
+        def callback(score: str):
+            try:
+                score = int(score)
+            except ValueError:
                 score = self.score
-            reward = score - self.score
+            logging.debug("Setting score to %d", score)
             self.score = score
-        except ValueError:
-            score = self.score
-            reward = 0
 
-        return score, reward
+        self.score_parser.parse_async(score, callback=callback)
+
+        return self.score
 
     def _is_game_over(self, game_over_slice):
         middle_row_idx = self.GAME_OVER.shape[0] // 2
@@ -140,14 +209,15 @@ class Environment:
 
     def unpause(self):
         try:
-            self.keyboard.press(Key.enter)
+            self.keyboard.press('q')
             time.sleep(0.05)
         finally:
-            self.keyboard.release(Key.enter)
+            self.keyboard.release('q')
 
 
 if __name__ == '__main__':
-    with Environment() as env:
-        game, reward, score, game_over = env._state()
-        game = Image.fromarray(game).show()
-        print(f"Score: '{score}', Game over: {game_over}")
+    env = Environment()
+    with env:
+        state, score, game_over = env.reset()
+        state = Image.fromarray(state[:, :, 0].astype(np.uint8) * 255).show()
+        print(f"Score: {score}, Game over: {game_over}")
