@@ -1,5 +1,5 @@
 mss==5.0.0
 pynput==1.6.8
-numpy==1.18.1
+numpy==1.22.0
 pytesseract==0.3.3
 opencv-python==4.2.0.34
